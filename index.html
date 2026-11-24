@@ -293,7 +293,92 @@
 		</figure>
 
 		<h2>Part 3: Handling collisions with other objects</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<p>
+		So far nothing stops the cloth from falling through objects in the scene. In Part 3, I added collisions with spheres
+		and planes. In <code>Cloth::simulate</code>, right after the Verlet step moves the masses and before the Provot
+		correction, I loop over every point mass and call <code>collide</code> on it for every collision object in the scene.
+		<code>collide</code> is a virtual function of <code>CollisionObject</code>, so the same loop calls the sphere's or the
+		plane's version depending on the object. Each version checks whether the mass has ended up somewhere it should not be,
+		and if so, moves it back to the surface.
+		</p>
+
+		<p>
+		Both collisions use the same idea for the final correction. Once I know the point \( \mathbf{t} \) on the surface where
+		the mass should be, I do not simply move the mass there. Instead, I measure the correction from the mass's position in
+		the <i>previous</i> step and scale it by \( 1 - f \), where \( f \) is the object's friction,
+		\[ \mathbf{x}_{\text{new}} = \mathbf{x}_{\text{last}} + (1 - f)\,(\mathbf{t} - \mathbf{x}_{\text{last}}). \]
+		Because Verlet integration infers velocity from the last two positions, measuring from <code>last_position</code>
+		removes the velocity that carried the mass into the object. If I only moved <code>position</code> onto the surface,
+		the mass would keep its velocity into the object and dig back in on the next step. The friction factor makes the mass
+		cover only part of the distance along the surface, so with higher friction the cloth slides less.
+		</p>
+
+		<p>
+		For a sphere with centre \( \mathbf{c} \) and radius \( R \), a mass collides if it is inside the sphere, which is when
+		\( \|\mathbf{x} - \mathbf{c}\| &lt; R \). In that case, the closest point on the surface lies in the same direction from
+		the centre, so the tangent point is
+		\[ \mathbf{t} = \mathbf{c} + R\,\frac{\mathbf{x} - \mathbf{c}}{\|\mathbf{x} - \mathbf{c}\|}, \]
+		and I apply the correction above.
+		</p>
+
+		<p>
+		A plane is defined by a point \( \mathbf{p} \) on it and a unit normal \( \mathbf{n} \), and the signed distance of a point
+		\( \mathbf{x} \) from it is \( d(\mathbf{x}) = (\mathbf{x} - \mathbf{p}) \cdot \mathbf{n} \), which is positive on the side the
+		normal points to and negative on the other side. A plane has no inside, so instead a mass collides if it crossed the
+		plane during the last step, which is when \( d(\mathbf{x}) \) and \( d(\mathbf{x}_{\text{last}}) \) have different signs. In
+		that case, I project the current position straight onto the plane with
+		\( \mathbf{t} = \mathbf{x} - d(\mathbf{x})\,\mathbf{n} \). A mass placed exactly on the plane could end up on either side due
+		to rounding, so I offset the target by a tiny <code>SURFACE_OFFSET</code> along the normal, towards the side the mass
+		came from, before applying the correction.
+		</p>
+
+		<h3>Results</h3>
+		<p>
+		These screenshots show <code>sphere.json</code> after the cloth has come to rest over the sphere, with three different
+		spring constants. With a low \( k_s \) of 500, the cloth is soft, so it clings closely to the sphere and hangs almost
+		straight down, falling into many narrow folds. It also stretches the most, so its corners reach the lowest. With the
+		default \( k_s \) of 5000, the cloth still drapes over the sphere but holds its shape a little more, with fewer and wider
+		folds. With a high \( k_s \) of 50000, the cloth is stiff enough to resist bending around the sphere. It flares out
+		sideways like a skirt, with only a few large folds, and its corners stick out instead of hanging down.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part3_sphere_ks500.png" width="100%"/>
+				  <figcaption>\( k_s = 500 \)</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part3_sphere_ks5000.png" width="100%"/>
+				  <figcaption>\( k_s = 5000 \) (default)</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part3_sphere_ks50000.png" width="100%"/>
+				  <figcaption>\( k_s = 50000 \)</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<p>
+		For <code>plane.json</code>, the cloth falls onto the plane and lies flat on it without sinking through. The left image
+		uses the normal shader, where the cloth is the lighter green rectangle on top of the plane, and the right image shows
+		the same moment in wireframe.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part3_plane.png" width="100%"/>
+				  <figcaption>Cloth at rest on the plane, normal shader</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part3_plane_wireframe.png" width="100%"/>
+				  <figcaption>Cloth at rest on the plane, wireframe</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
 
 		<h2>Part 4: Handling self-collisions</h2>
 		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.

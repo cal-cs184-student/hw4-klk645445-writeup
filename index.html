@@ -381,7 +381,172 @@
 		</div>
 
 		<h2>Part 4: Handling self-collisions</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<p>
+		The collisions from Part 3 only stop the cloth from passing through other objects. Nothing stops it from passing
+		through itself, so a cloth that falls and folds over would clip straight through its own layers. To prevent this, every
+		point mass needs to be pushed away from any other point mass that gets too close. Checking every pair is too slow,
+		since the \( 50 \times 50 \) cloth has 2500 masses and therefore over 3 million pairs, and this would have to run in every
+		simulation step. Instead, I use spatial hashing so that each mass is only compared with the masses near it.
+		</p>
+
+		<p>
+		Spatial hashing divides space into a 3D grid of boxes and groups the point masses by the box they are in. The boxes have
+		width \( w = 3\,\frac{\text{width}}{\text{num_width_points}} \), height
+		\( h = 3\,\frac{\text{height}}{\text{num_height_points}} \) and depth \( t = \max(w, h) \), so each box spans about three
+		mass spacings. In <code>Cloth::hash_position</code>, I find the indices of the box that contains a position by dividing
+		each coordinate by the box size and rounding down,
+		\[ b_x = \left\lfloor \frac{x}{w} \right\rfloor, \quad b_y = \left\lfloor \frac{y}{h} \right\rfloor, \quad b_z = \left\lfloor \frac{z}{t} \right\rfloor. \]
+		I use <code>floor</code> instead of truncating so that negative coordinates are handled correctly, since truncation
+		would round both \( -0.5 \) and \( 0.5 \) to box 0. I then combine the three indices into a single number,
+		\[ \text{key} = b_x + 300\,b_y + 300^2\,b_z, \]
+		which is unique for every box as long as the indices stay below 150 in magnitude, which is true for this scene. I kept the
+		multipliers small because the key is stored as a <code>float</code>, which only has about 7 significant digits, so very
+		large multipliers would make neighbouring boxes round to the same key.
+		</p>
+
+		<p>
+		In <code>Cloth::build_spatial_map</code>, I clear the old map, then loop over every point mass, compute its key, and add
+		a pointer to it to the list stored for that key, creating a new list the first time a key appears. In
+		<code>Cloth::self_collide</code>, I look up the list for the mass's own box and loop over the other masses in it,
+		skipping the mass itself and any mass at exactly the same position, since the direction between them is undefined. The
+		cloth is treated as having a thickness, so two masses should be at least \( 2 \cdot \text{thickness} \) apart. For every
+		candidate \( \mathbf{x}_c \) closer than that, I compute the correction that would push the mass \( \mathbf{x} \) away
+		from it until they are exactly that far apart,
+		\[ \mathbf{c} = \frac{\mathbf{x} - \mathbf{x}_c}{\|\mathbf{x} - \mathbf{x}_c\|}\,\big(2 \cdot \text{thickness} - \|\mathbf{x} - \mathbf{x}_c\|\big). \]
+		I average all of these corrections and divide the average by <code>simulation_steps</code> before adding it to the
+		mass's position. Dividing spreads the push over many steps, which keeps the layers from jumping apart violently in a
+		single step. Each call only moves the one mass passed in, and the candidate gets its own correction when
+		<code>self_collide</code> is called on it.
+		</p>
+
+		<p>
+		In <code>Cloth::simulate</code>, right after the Verlet step and before the collisions with other objects, I rebuild the
+		spatial map and then call <code>self_collide</code> on every point mass. The map has to be rebuilt in every step because
+		the masses move.
+		</p>
+
+		<h3>Results</h3>
+		<p>
+		These screenshots show <code>selfCollision.json</code>, where a vertical cloth falls onto a plane, with the default
+		parameters. When the bottom edge hits the plane, the rest of the cloth keeps falling onto it and the bottom starts to
+		buckle into ripples. These ripples turn into folds that stack on top of each other, and by frame 60 the whole cloth has
+		collapsed into a pile of layers. Instead of passing through each other, the layers slide over each other and spread out
+		into a long strip folded over a few times. The lighter green and the purple parts of the strip are layers facing
+		opposite ways, which shows that the cloth has really folded over itself. After that, it slowly relaxes, and by frame 800
+		it lies almost still on the plane, with the folds still visible along its edges.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f20.png" width="100%"/>
+				  <figcaption>Frame 20, the bottom edge hits the plane</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f40.png" width="100%"/>
+				  <figcaption>Frame 40, folds start to stack</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f60.png" width="100%"/>
+				  <figcaption>Frame 60, the cloth has collapsed</figcaption>
+				</td>
+			  </tr>
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f90.png" width="100%"/>
+				  <figcaption>Frame 90, the layers spread out</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f150.png" width="100%"/>
+				  <figcaption>Frame 150, folded into a strip</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f800.png" width="100%"/>
+				  <figcaption>Frame 800, almost at rest</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<h3>Effect of density and \( k_s \)</h3>
+		<p>
+		As in Part 2, only the ratio of \( k_s \) to the density matters, and the images below confirm this, since a density of
+		1.5 g/cm² looks the same as \( k_s = 50000 \), and a density of 150 g/cm² looks the same as \( k_s = 500 \). A low
+		density or a high \( k_s \) makes the cloth stiff compared to its weight. Instead of crumpling, the bottom of the cloth
+		bends out to one side in a single large, smooth fold, and the cloth ends up lying as a few wide loops. A high density or
+		a low \( k_s \) does the opposite. The cloth is heavy compared to how hard its springs pull back, so it cannot hold its
+		shape. At frame 40 it crumples into many small, tight pleats right where it touches the plane, and it collapses into a
+		thin crumpled heap instead of a few clean folds.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_d15_f40.png" width="100%"/>
+				  <figcaption>Density 1.5 g/cm², frame 40</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_f40.png" width="100%"/>
+				  <figcaption>Default (15 g/cm², \( k_s = 5000 \)), frame 40</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_d1500_f40.png" width="100%"/>
+				  <figcaption>Density 150 g/cm², frame 40</figcaption>
+				</td>
+			  </tr>
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_d15_f80.png" width="100%"/>
+				  <figcaption>Density 1.5 g/cm², frame 80</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_def_f80.png" width="100%"/>
+				  <figcaption>Default, frame 80</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_d1500_f80.png" width="100%"/>
+				  <figcaption>Density 150 g/cm², frame 80</figcaption>
+				</td>
+			  </tr>
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_k50000_f40.png" width="100%"/>
+				  <figcaption>\( k_s = 50000 \), frame 40</figcaption>
+				</td>
+				<td></td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_k500_f40.png" width="100%"/>
+				  <figcaption>\( k_s = 500 \), frame 40</figcaption>
+				</td>
+			  </tr>
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part4_k50000_f80.png" width="100%"/>
+				  <figcaption>\( k_s = 50000 \), frame 80</figcaption>
+				</td>
+				<td></td>
+				<td style="text-align: center;">
+				  <img src="assets/part4_k500_f80.png" width="100%"/>
+				  <figcaption>\( k_s = 500 \), frame 80</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<p>
+		With a density of 150 g/cm² or \( k_s = 500 \), parts of the cloth are already missing at frame 80, and shortly after
+		that the whole cloth sinks through the plane, as shown below from further away. This comes from the order of the
+		steps in <code>simulate</code>. The springs of such a soft cloth are stretched far past their rest length, so the Provot
+		correction, which runs after the plane collision, moves some masses by large amounts and can pull them below the
+		plane. In the next step, both <code>position</code> and <code>last_position</code> of those masses are below the plane,
+		so the plane never sees them cross it and stops correcting them, and they drag the rest of the cloth down with them. To
+		confirm this, I ran the collisions a second time after the Provot correction, and the cloth then stayed on top of the
+		plane for both settings. With the default parameters, the springs never stretch enough for this to happen.
+		</p>
+		<figure>
+			<img src="assets/part4_fallthrough.png" alt="Heavy cloth falling through the plane" style="width:60%"/>
+			<figcaption>Density 150 g/cm², frame 140, the cloth has sunk through the plane</figcaption>
+		</figure>
 
 		<h2>Part 5: Shaders</h2>
 		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.

@@ -37,7 +37,25 @@
 		Link to GitHub repository: <a href="https://github.com/cal-cs184-student/hw4-klk645445">github.com/cal-cs184-student/hw4-klk645445</a>
 
 		<h2>Overview</h2>
-		Give a high-level overview of what you implemented in this homework. Think about what you've built as a whole. Share your thoughts on what interesting things you've learned from completing the homework.
+		<p>
+		In this homework, I built a real-time cloth simulator and a set of GLSL shaders to render it. The cloth is modelled as a
+		grid of point masses connected by structural, shearing and bending springs. In every time step, I add up gravity and
+		the spring forces from Hooke's law, move the masses with Verlet integration, and then fix up the result, first by
+		resolving collisions with spheres and planes, then by pushing apart parts of the cloth that come too close to each other,
+		using a spatial hash so that each mass is only compared with its neighbours, and finally by limiting how far any spring
+		can stretch in one step. On the rendering side, I wrote vertex and fragment shaders for diffuse and Blinn-Phong shading,
+		texture mapping, bump and displacement mapping, and mirror reflections from a cubemap.
+		</p>
+
+		<p>
+		The most interesting thing I learned is how much of a simulation's behaviour comes from small choices outside the
+		physics itself. Only the ratio of the spring constant to the density affects the result, damping decides whether the
+		cloth ever comes to rest, and the order of the steps in <code>simulate</code> decides whether a heavy cloth stays on a
+		plane or sinks through it. I also found it interesting that measuring collision corrections from the previous position
+		is enough to remove a mass's velocity, because Verlet integration has no velocity variable to reset. On the shader side,
+		comparing bump and displacement mapping made it clear how convincing a fake normal can be until you look at the
+		silhouette.
+		</p>
 
 		<h2>Part 1: Masses and springs</h2>
 		<p>
@@ -549,11 +567,215 @@
 		</figure>
 
 		<h2>Part 5: Shaders</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
+		<h3>Shader programs</h3>
+		<p>
+		A shader program is a small program that runs on the GPU instead of the CPU, as part of the pipeline that turns
+		triangles into pixels. Since the GPU runs thousands of copies of it in parallel, one for each vertex or pixel, it can
+		shade the whole cloth in real time, which would be far too slow with a ray tracer like the one in Homework 3. In
+		OpenGL, a shader program is made of two stages written in GLSL, a vertex shader and a fragment shader.
+		</p>
 
-		<h2>(Optional) Part 6: Extra Credit - Additional cloth simulation features!</h2>
-		Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-		
+		<p>
+		The vertex shader runs once for every vertex of the mesh. Its main job is to transform the vertex's position from model
+		space to the screen by multiplying it with the model and view-projection matrices, and to write the result to
+		<code>gl_Position</code>. It also outputs per-vertex values that the later stage needs, such as the world-space position,
+		the normal, the tangent and the uv coordinates. It can also change the geometry itself, which is how displacement mapping
+		moves the vertices of the sphere. The GPU then rasterizes each triangle and interpolates these outputs across it with
+		barycentric coordinates, as in Homework 1.
+		</p>
+
+		<p>
+		The fragment shader then runs once for every pixel covered by a triangle, and receives the interpolated values for that
+		pixel. It uses them, together with uniforms that are the same for every pixel, such as the light's position and
+		intensity, the camera's position and the textures, to compute the final colour of the pixel. Lighting and material
+		effects come from how the two stages work together. The vertex shader puts the geometry in place and passes along the
+		surface information, and the fragment shader uses that information to evaluate a lighting model or look up a texture at
+		every pixel. Because the normal is interpolated and the lighting is computed per pixel, the shading varies smoothly across
+		each triangle instead of being flat, and perturbing the normal in the fragment shader is enough to make a flat surface
+		look bumpy.
+		</p>
+
+		<h3>Blinn-Phong shading</h3>
+		<p>
+		The Blinn-Phong model approximates how light reflects off a surface as the sum of three parts. The ambient term
+		\( k_a I_a \) is a constant amount of light added everywhere. It stands in for light that bounces around the scene
+		indirectly, which this model does not trace, so that parts facing away from the light are not completely black. The
+		diffuse term \( k_d \frac{I}{r^2} \max(0, \mathbf{n} \cdot \mathbf{l}) \) is the same Lambertian term as in the diffuse
+		shader. It models a matte surface that scatters light equally in all directions, so it depends only on the angle
+		between the normal \( \mathbf{n} \) and the direction to the light \( \mathbf{l} \), and falls off with the squared distance
+		\( r^2 \) to the light. It does not depend on where the camera is. The specular term
+		\( k_s \frac{I}{r^2} \max(0, \mathbf{n} \cdot \mathbf{h})^p \) models the shiny highlight. Here \( \mathbf{h} \) is the
+		half vector, the normalized sum of the direction to the light and the direction to the camera. When \( \mathbf{h} \) lines
+		up with the normal, the light is reflected straight towards the camera, and the highlight is brightest. The exponent
+		\( p \) controls how quickly the highlight fades as they move apart, so a larger \( p \) gives a smaller, sharper highlight,
+		as on a shinier material. The full model adds all three,
+		\[ L = k_a I_a + k_d \frac{I}{r^2} \max(0, \mathbf{n} \cdot \mathbf{l}) + k_s \frac{I}{r^2} \max(0, \mathbf{n} \cdot \mathbf{h})^p. \]
+		</p>
+		<p>
+		In my shader, I compute the normal, the direction to the light, the direction to the camera and the half vector at every
+		pixel, and keep the three terms in separate variables before adding them. I used \( k_a = 0.1 \), \( I_a = 1 \),
+		\( k_d = 1 \), \( k_s = 0.5 \) and \( p = 100 \). The images below show <code>sphere.json</code> after the cloth has
+		settled, with each term on its own and then the full model. The ambient term alone is a flat, dark grey silhouette with
+		no shading at all, since it is the same everywhere. The diffuse term alone gives all of the shape, with the tops of the
+		folds facing the light bright and the insides of the drape black. The specular term alone is black almost everywhere,
+		except for small bright highlights on the top of the sphere and along the ridges of the folds, where the surface reflects
+		the light towards the camera. In the full model, the highlights make the cloth look slightly shiny, and the ambient term
+		lifts the shadows from pure black to dark grey.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_phong_ambient.png" width="100%"/>
+				  <figcaption>Ambient only</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_phong_diffuse.png" width="100%"/>
+				  <figcaption>Diffuse only</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_phong_specular.png" width="100%"/>
+				  <figcaption>Specular only</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_phong_full.png" width="100%"/>
+				  <figcaption>Full Blinn-Phong</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<h3>Texture mapping</h3>
+		<p>
+		Each vertex of the cloth has uv coordinates that run from 0 to 1 across the cloth, and the rasterizer interpolates them
+		for every pixel. The texture shader samples the texture at the pixel's uv with GLSL's <code>texture</code> function and
+		outputs that colour directly. For my custom texture, I replaced <code>textures/texture_1.png</code> with a rusty
+		corrugated metal texture from Poly Haven, scaled down to 1024 by 1024. The whole image is mapped once onto the cloth,
+		and it bends with the folds as the cloth drapes over the sphere.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 80%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_texture_image.png" width="100%"/>
+				  <figcaption>The custom texture</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_texture.png" width="100%"/>
+				  <figcaption>Texture shader on the cloth</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<h3>Bump and displacement mapping</h3>
+		<p>
+		Both shaders use a height map \( h(u, v) \), for which I replaced <code>textures/texture_2.png</code> with the height map
+		that comes with the same Poly Haven texture, so the ridges line up with the corrugation in the colour texture. I read the
+		height from the red channel.
+		</p>
+
+		<p>
+		Bump mapping keeps the geometry the same and only changes the normal used for lighting. In the fragment shader, I build a
+		local frame from the tangent \( \mathbf{t} \), the bitangent \( \mathbf{b} = \mathbf{n} \times \mathbf{t} \) and the normal
+		\( \mathbf{n} \), and estimate how fast the height changes in each direction by comparing it one texel away,
+		\[ dU = \big(h(u + \frac{1}{w}, v) - h(u, v)\big)\,k_h k_n, \qquad dV = \big(h(u, v + \frac{1}{h}) - h(u, v)\big)\,k_h k_n, \]
+		where \( w \) and \( h \) are the texture's width and height, \( k_h \) is the height scaling and \( k_n \) is the normal
+		scaling. The perturbed normal is \( \mathbf{n}_o = (-dU, -dV, 1) \) in that local frame, and multiplying it by the matrix
+		\( [\,\mathbf{t}\ \mathbf{b}\ \mathbf{n}\,] \) turns it into a world-space normal. I then shade with Blinn-Phong using this
+		normal. Displacement mapping uses the same fragment shader, but the vertex shader also moves every vertex along its
+		normal by the height, \( \mathbf{p}' = \mathbf{p} + \mathbf{n}\,h(u, v)\,k_h \).
+		</p>
+
+		<p>
+		All of the images below use a height scaling of 0.1 and a normal scaling of 480. My height map is smoother than the
+		staff's example, so it needs a much larger normal scaling for the bumps to show. On both the cloth and the sphere, bump
+		mapping makes the corrugation clearly visible as light and dark stripes, even though the surface is still smooth. On the
+		sphere, the difference between the two methods is easiest to see at the silhouette. With bump mapping, the outline of
+		the sphere is still a perfect circle, which gives away that the bumps are fake. With displacement mapping, the ridges
+		actually stick out, so the outline is lumpy, especially at the top where all the ridges meet, and the sphere is slightly
+		larger because the vertices only move outwards. Bump mapping is cheaper and works on any mesh, but it only looks right
+		when the surface is viewed head-on. Displacement mapping looks correct from every angle, but it needs a mesh fine enough
+		to represent the detail.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_bump_cloth.png" width="100%"/>
+				  <figcaption>Bump mapping on the cloth</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_bump_sphere.png" width="100%"/>
+				  <figcaption>Bump mapping on the sphere</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_disp_sphere.png" width="100%"/>
+				  <figcaption>Displacement mapping on the sphere</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<p>
+		The images above use the default sphere mesh of 40 by 40. The images below compare a coarse mesh with
+		<code>-o 16 -a 16</code> against a fine mesh with <code>-o 128 -a 128</code>. Bump mapping hardly changes, since the
+		normal is computed per pixel from the texture, so the stripes look equally detailed on both meshes. The only difference
+		is that the outline of the coarse sphere is visibly made of straight segments. Displacement mapping depends much more on
+		the mesh, because the height is only applied at the vertices. With 16 by 16, there are too few vertices to follow the
+		ridges, so the shape is blocky and angular, and the geometry does not line up with the shaded stripes. With 128 by 128,
+		the vertices sample the height map closely enough that the ridges come out as smooth, rounded bulges, and the outline
+		follows each ridge.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 100%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_bump_sphere_16.png" width="100%"/>
+				  <figcaption>Bump, 16 by 16</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_bump_sphere_128.png" width="100%"/>
+				  <figcaption>Bump, 128 by 128</figcaption>
+				</td>
+			  </tr>
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_disp_sphere_16.png" width="100%"/>
+				  <figcaption>Displacement, 16 by 16</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_disp_sphere_128.png" width="100%"/>
+				  <figcaption>Displacement, 128 by 128</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
+		<h3>Mirror shader</h3>
+		<p>
+		The mirror shader makes the surface reflect an environment stored as a cubemap. For every pixel, I compute the direction
+		from the camera to the point, \( \mathbf{w}_o \), and reflect it about the normal with GLSL's <code>reflect</code> to get
+		the incoming direction \( \mathbf{w}_i \). I then look up the cubemap in that direction and use the result as the
+		colour. On the sphere, the environment appears as a distorted, fish-eye image of the scene, with the sky and the bridge
+		curving around the surface. On the cloth, every fold changes the normal, so the reflection is stretched and broken up
+		along the folds, which makes it look like a sheet of liquid metal.
+		</p>
+		<div style="display: flex; flex-direction: column; align-items: center;">
+			<table style="width: 80%; text-align: center; border-collapse: collapse; table-layout: fixed;">
+			  <tr>
+				<td style="text-align: center;">
+				  <img src="assets/part5_mirror_cloth.png" width="100%"/>
+				  <figcaption>Mirror shader on the cloth</figcaption>
+				</td>
+				<td style="text-align: center;">
+				  <img src="assets/part5_mirror_sphere.png" width="100%"/>
+				  <figcaption>Mirror shader on the sphere</figcaption>
+				</td>
+			  </tr>
+			</table>
+		</div>
+
 		</div>
 	</body>
 </html>
